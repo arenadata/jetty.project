@@ -50,7 +50,7 @@ pipeline {
                             skipPublishingChecks: true, skipBlames: true
               recordCoverage id: "coverage-jdk17", name: "Coverage jdk17", tools: [[parser: 'JACOCO',pattern: 'target/site/jacoco-aggregate/jacoco.xml']],
                             sourceCodeRetention: 'MODIFIED',
-                             sourceDirectories: [[path: 'src/main/java'], [path: 'target/generated-sources/ee8']]
+                             sourceDirectories: [[path: 'regex:.*/src/main/java'], [path: 'regex:.*/target/generated-sources/ee8']]
             }
           }
         }
