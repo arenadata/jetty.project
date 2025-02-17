@@ -48,7 +48,7 @@ pipeline {
               recordIssues id: "analysis-jdk17", name: "Static Analysis jdk17", aggregatingResults: true, enabledForFailure: true,
                             tools: [mavenConsole(), java(), checkStyle(), errorProne(), spotBugs(), javaDoc()],
                             skipPublishingChecks: true, skipBlames: true
-              recordCoverage id: "coverage-jdk17", name: "Coverage jdk17", tools: [[parser: 'JACOCO',pattern: 'target/site/jacoco-aggregate/jacoco.xml']] /,
+              recordCoverage id: "coverage-jdk17", name: "Coverage jdk17", tools: [[parser: 'JACOCO',pattern: 'target/site/jacoco-aggregate/jacoco.xml']] //,
                             //sourceCodeRetention: 'LAST_BUILD', //MODIFIED
                             //sourceDirectories: [[path: 'glob:**/src/main/java'], [path: 'glob:**/target/generated-sources/ee8']]
                             //sourceDirectories: [[path: 'regex:.*/src/main/java'], [path: 'regex:.*/target/generated-sources/ee8']]
