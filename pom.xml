@@ -1994,9 +1994,6 @@
             <exclude>**/org/objectweb/**</exclude>
             <exclude>**/**Benchmark</exclude>
           </excludes>
-          <includes>
-            <include>**/org/eclipse/jetty/**</include>
-          </includes>
         </configuration>
         <executions>
           <execution>
