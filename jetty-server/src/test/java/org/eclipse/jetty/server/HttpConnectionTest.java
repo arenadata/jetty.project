@@ -74,6 +74,7 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.not;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class HttpConnectionTest
@@ -110,6 +111,51 @@ public class HttpConnectionTest
     }
 
     @Test
+    public void testChunkSmuggledInQuotedExtensionValue() throws Exception
+    {
+        // CVE-2026-2332: the CRLF is inside a quoted extension value, so the
+        // second request is part of that value and must never be dispatched.
+        LocalEndPoint endp = connector.executeRequest("POST /R1 HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "\r\n" +
+            "1;a=\"\r\n" +
+            "X\r\n" +
+            "0\r\n" +
+            "\r\n" +
+            "GET /smuggled HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Content-Length: 11\r\n" +
+            "\r\n" +
+            "\"\r\n" +
+            "Y\r\n" +
+            "0\r\n" +
+            "\r\n");
+
+        String response = endp.getResponse(false, 5, TimeUnit.SECONDS);
+        assertThat(response, not(containsString("/smuggled")));
+        assertNull(endp.getResponse(false, 5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void testChunkExtensions() throws Exception
+    {
+        String response = connector.getResponse("POST /R1 HTTP/1.1\r\n" +
+            "Host: localhost\r\n" +
+            "Transfer-Encoding: chunked\r\n" +
+            "Content-Type: text/plain\r\n" +
+            "Connection: close\r\n" +
+            "\r\n" +
+            "5 ; name \t = \t value ;quoted=\"a;b=\\\"c\\\", \t d\";bare\r\n" +
+            "12345\r\n" +
+            "0;last=\"end\"\r\n" +
+            "\r\n");
+
+        assertThat(response, containsString("HTTP/1.1 200"));
+        assertThat(response, containsString("12345"));
+    }
+
+    @Test
     public void testFragmentedChunk() throws Exception
     {
         String response = null;
@@ -124,9 +170,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             offset = checkContains(response, offset, "HTTP/1.1 200");
             offset = checkContains(response, offset, "/R1");
@@ -139,9 +185,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "ABCDE\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             offset = checkContains(response, offset, "HTTP/1.1 200");
             offset = checkContains(response, offset, "/R2");
@@ -335,9 +381,9 @@ public class HttpConnectionTest
         }
         request.append("Content-Type: text/plain\r\n");
         request.append("\r\n");
-        request.append("8;\r\n"); // chunk header
+        request.append("8\r\n"); // chunk header
         request.append("abcdefgh"); // actual content of 8 bytes
-        request.append("\r\n0;\r\n\r\n"); // last chunk
+        request.append("\r\n0\r\n\r\n"); // last chunk
 
         String rawResponse = connector.getResponse(request.toString());
         HttpTester.Response response = HttpTester.parseResponse(rawResponse);
@@ -379,9 +425,9 @@ public class HttpConnectionTest
         tokens.forEach((token) -> request.append("Transfer-Encoding: ").append(token).append("\r\n"));
         request.append("Content-Type: text/plain\r\n");
         request.append("\r\n");
-        request.append("8;\r\n"); // chunk header
+        request.append("8\r\n"); // chunk header
         request.append("abcdefgh"); // actual content of 8 bytes
-        request.append("\r\n0;\r\n\r\n"); // last chunk
+        request.append("\r\n0\r\n\r\n"); // last chunk
 
         System.out.println(request.toString());
 
@@ -433,9 +479,9 @@ public class HttpConnectionTest
         tokens.forEach((token) -> request.append("Transfer-Encoding: ").append(token).append("\r\n"));
         request.append("Content-Type: text/plain\r\n");
         request.append("\r\n");
-        request.append("8;\r\n"); // chunk header
+        request.append("8\r\n"); // chunk header
         request.append("abcdefgh"); // actual content of 8 bytes
-        request.append("\r\n0;\r\n\r\n"); // last chunk
+        request.append("\r\n0\r\n\r\n"); // last chunk
 
         System.out.println(request.toString());
 
@@ -853,9 +899,9 @@ public class HttpConnectionTest
             "Content-Type: text/plain\r\n" +
             "Connection: close\r\n" +
             "\r\n" +
-            "5;\r\n" +
+            "5\r\n" +
             "12345\r\n" +
-            "0;\r\n" +
+            "0\r\n" +
             "\r\n");
         offset = checkContains(response, offset, "HTTP/1.1 200");
         checkNotContained(response, offset, "IgnoreMe");
@@ -902,9 +948,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             offset = checkContains(response, offset, "HTTP/1.1 200");
             offset = checkContains(response, offset, "/R1");
@@ -918,9 +964,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain; charset =  iso-8859-1 ; other=value\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             offset = checkContains(response, offset, "HTTP/1.1 200");
             offset = checkContains(response, offset, "encoding=iso-8859-1");
@@ -935,9 +981,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain; charset=unknown\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
 
             offset = checkContains(response, offset, "HTTP/1.1 200");
@@ -963,11 +1009,11 @@ public class HttpConnectionTest
                 "Transfer-Encoding: chunked\r\n" +
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "67890\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n" +
                 "GET /R2 HTTP/1.1\r\n" +
                 "Host: localhost\r\n" +
@@ -1001,7 +1047,7 @@ public class HttpConnectionTest
                 "Transfer-Encoding: chunked\r\n" +
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n";
 
         long start = TimeUnit.NANOSECONDS.toMillis(System.nanoTime());
@@ -1024,11 +1070,11 @@ public class HttpConnectionTest
                 "Transfer-Encoding: chunked\r\n" +
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "67890\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n" +
                 "GET /R2 HTTP/1.1\r\n" +
                 "Host: localhost\r\n" +
@@ -1058,11 +1104,11 @@ public class HttpConnectionTest
                 "Transfer-Encoding: chunked\r\n" +
                 "Content-Type: application/data; charset=utf-8\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "67890\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n" +
                 "GET /R2 HTTP/1.1\r\n" +
                 "Host: localhost\r\n" +
@@ -1091,11 +1137,11 @@ public class HttpConnectionTest
             "Transfer-Encoding: chunked\r\n" +
             "Content-Type: text/plain; charset=utf-8\r\n" +
             "\r\n" +
-            "5;\r\n" +
+            "5\r\n" +
             "12345\r\n" +
-            "5;\r\n" +
+            "5\r\n" +
             "67890\r\n" +
-            "0;\r\n" +
+            "0\r\n" +
             "\r\n" +
             "GET /R2 HTTP/1.1\r\n" +
             "Host: localhost\r\n" +
@@ -1128,9 +1174,9 @@ public class HttpConnectionTest
                 "Transfer-Encoding: chunked\r\n" +
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             checkContains(response, offset, "Connection: close");
         }
@@ -1306,9 +1352,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             checkContains(response, offset, "HTTP/1.1 200");
 
@@ -1319,9 +1365,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             checkContains(response, offset, "HTTP/1.1 400");
 
@@ -1332,9 +1378,9 @@ public class HttpConnectionTest
                 "Content-Type: text/plain; charset=utf-8\r\n" +
                 "Connection: close\r\n" +
                 "\r\n" +
-                "5;\r\n" +
+                "5\r\n" +
                 "12345\r\n" +
-                "0;\r\n" +
+                "0\r\n" +
                 "\r\n");
             checkContains(response, offset, "HTTP/1.1 400 Bad Request");
         }

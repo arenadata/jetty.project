@@ -487,7 +487,7 @@ public abstract class HttpServerTestBase extends HttpServerTestFixture
             os.flush();
             Thread.sleep(1000);
             os.write(("ABCDE\r\n" +
-                "0;\r\n\r\n").getBytes());
+                "0\r\n\r\n").getBytes());
             os.flush();
 
             // Read the response.

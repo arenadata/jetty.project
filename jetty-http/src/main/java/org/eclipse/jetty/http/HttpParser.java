@@ -133,13 +133,35 @@ public class HttpParser
         EOF_CONTENT,
         CHUNKED_CONTENT,
         CHUNK_SIZE,
+        /**
+         * @deprecated chunk extensions are parsed within {@link #CHUNK_SIZE}; this state is never entered
+         */
+        @Deprecated
         CHUNK_PARAMS,
         CHUNK,
+        CHUNK_END,
         CONTENT_END,
         TRAILER,
         END,
         CLOSE,  // The associated stream/endpoint should be closed
         CLOSED  // The associated stream/endpoint is at EOF
+    }
+
+    /**
+     * States of the chunk header, which is the chunk size followed by the
+     * chunk extensions, as defined in RFC 9112[7.1.1].
+     */
+    private enum ChunkSizeState
+    {
+        SIZE,
+        EXT_BWS,
+        EXT_NAME_BWS_BEFORE,
+        EXT_NAME,
+        EXT_NAME_BWS_AFTER,
+        EXT_VALUE_BWS_BEFORE,
+        EXT_VALUE_OPEN_QUOTE,
+        EXT_VALUE,
+        EXT_VALUE_CLOSE_QUOTE,
     }
 
     private static final EnumSet<State> __idleStates = EnumSet.of(State.START, State.END, State.CLOSE, State.CLOSED);
@@ -177,6 +199,9 @@ public class HttpParser
     private long _contentPosition;
     private int _chunkLength;
     private int _chunkPosition;
+    private ChunkSizeState _chunkSizeState = ChunkSizeState.SIZE;
+    private boolean _chunkQuotedEscape;
+    private int _chunkHeaderBytes;
     private boolean _headResponse;
     private boolean _cr;
     private ByteBuffer _contentChunk;
@@ -1615,8 +1640,8 @@ public class HttpParser
                     case CONTENT:
                     case CHUNKED_CONTENT:
                     case CHUNK_SIZE:
-                    case CHUNK_PARAMS:
                     case CHUNK:
+                    case CHUNK_END:
                         setState(State.CLOSED);
                         _handler.earlyEOF();
                         break;
@@ -1760,63 +1785,8 @@ public class HttpParser
 
                 case CHUNK_SIZE:
                 {
-                    HttpTokens.Token t = next(buffer);
-                    if (t == null)
-                        break;
-
-                    switch (t.getType())
-                    {
-                        case LF:
-                            if (_chunkLength == 0)
-                            {
-                                setState(State.TRAILER);
-                                if (_handler.contentComplete())
-                                    return true;
-                            }
-                            else
-                                setState(State.CHUNK);
-                            break;
-
-                        case SPACE:
-                            setState(State.CHUNK_PARAMS);
-                            break;
-
-                        default:
-                            if (t.isHexDigit())
-                            {
-                                if (_chunkLength > MAX_CHUNK_LENGTH)
-                                    throw new BadMessageException(HttpStatus.PAYLOAD_TOO_LARGE_413);
-                                _chunkLength = _chunkLength * 16 + t.getHexDigit();
-                            }
-                            else
-                            {
-                                setState(State.CHUNK_PARAMS);
-                            }
-                    }
-                    break;
-                }
-
-                case CHUNK_PARAMS:
-                {
-                    HttpTokens.Token t = next(buffer);
-                    if (t == null)
-                        break;
-
-                    switch (t.getType())
-                    {
-                        case LF:
-                            if (_chunkLength == 0)
-                            {
-                                setState(State.TRAILER);
-                                if (_handler.contentComplete())
-                                    return true;
-                            }
-                            else
-                                setState(State.CHUNK);
-                            break;
-                        default:
-                            break; // TODO review
-                    }
+                    if (parseChunkSize(buffer))
+                        return true;
                     break;
                 }
 
@@ -1825,7 +1795,7 @@ public class HttpParser
                     int chunk = _chunkLength - _chunkPosition;
                     if (chunk == 0)
                     {
-                        setState(State.CHUNKED_CONTENT);
+                        setState(State.CHUNK_END);
                     }
                     else
                     {
@@ -1844,6 +1814,19 @@ public class HttpParser
                     break;
                 }
 
+                case CHUNK_END:
+                {
+                    HttpTokens.Token t = next(buffer);
+                    if (t == null)
+                        break;
+
+                    // The chunk data must be followed exactly by a line terminator.
+                    if (t.getType() != HttpTokens.Type.LF)
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    setState(State.CHUNKED_CONTENT);
+                    break;
+                }
+
                 case CONTENT_END:
                 {
                     setState(_endOfContent == EndOfContent.EOF_CONTENT ? State.CLOSED : State.END);
@@ -1857,6 +1840,236 @@ public class HttpParser
             remaining = buffer.remaining();
         }
         return false;
+    }
+
+    /**
+     * Parses the chunk header, that is the chunk size and its extensions, as
+     * defined in RFC 9112[7.1.1]. A line terminator inside a quoted extension
+     * value is quoted text and not the end of the chunk header, so parsing it
+     * as a terminator lets a request be smuggled inside the extension value.
+     *
+     * @param buffer the buffer to parse
+     * @return whether the caller should return
+     */
+    private boolean parseChunkSize(ByteBuffer buffer)
+    {
+        while (_state == State.CHUNK_SIZE && buffer.hasRemaining())
+        {
+            HttpTokens.Token t = next(buffer);
+            if (t == null)
+                break;
+
+            if (_maxHeaderBytes > 0 && ++_chunkHeaderBytes > _maxHeaderBytes)
+            {
+                LOG.warn("chunk header is too large >" + _maxHeaderBytes);
+                throw new BadMessageException(HttpStatus.REQUEST_HEADER_FIELDS_TOO_LARGE_431);
+            }
+
+            switch (_chunkSizeState)
+            {
+                case SIZE:
+                    if (t.getType() == HttpTokens.Type.LF)
+                    {
+                        if (chunkSizeEnd())
+                            return true;
+                    }
+                    else if (t.isHexDigit())
+                    {
+                        if (_chunkLength > MAX_CHUNK_LENGTH)
+                            throw new BadMessageException(HttpStatus.PAYLOAD_TOO_LARGE_413);
+                        _chunkLength = _chunkLength * 16 + t.getHexDigit();
+                    }
+                    else if (isBWS(t))
+                        setChunkSizeState(ChunkSizeState.EXT_BWS);
+                    else if (t.getChar() == ';')
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_BEFORE);
+                    else
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_BWS:
+                    if (t.getChar() == ';')
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_BEFORE);
+                    else if (!isBWS(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_NAME_BWS_BEFORE:
+                    if (isTchar(t))
+                        setChunkSizeState(ChunkSizeState.EXT_NAME);
+                    else if (!isBWS(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_NAME:
+                    if (t.getType() == HttpTokens.Type.LF)
+                    {
+                        if (chunkSizeEnd())
+                            return true;
+                    }
+                    else if (t.getChar() == ';')
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_BEFORE);
+                    else if (isBWS(t))
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_AFTER);
+                    else if (t.getChar() == '=')
+                        setChunkSizeState(ChunkSizeState.EXT_VALUE_BWS_BEFORE);
+                    else if (!isTchar(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_NAME_BWS_AFTER:
+                    if (t.getChar() == ';')
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_BEFORE);
+                    else if (t.getChar() == '=')
+                        setChunkSizeState(ChunkSizeState.EXT_VALUE_BWS_BEFORE);
+                    else if (!isBWS(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_VALUE_BWS_BEFORE:
+                    if (t.getChar() == '"')
+                        setChunkSizeState(ChunkSizeState.EXT_VALUE_OPEN_QUOTE);
+                    else if (isTchar(t))
+                        setChunkSizeState(ChunkSizeState.EXT_VALUE);
+                    else if (!isBWS(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_VALUE_OPEN_QUOTE:
+                    if (_chunkQuotedEscape)
+                    {
+                        if (!isQuotedPair(t))
+                            throw new IllegalCharacterException(_state, t, buffer);
+                        _chunkQuotedEscape = false;
+                    }
+                    else if (t.getChar() == '\\')
+                        _chunkQuotedEscape = true;
+                    else if (t.getChar() == '"')
+                        setChunkSizeState(ChunkSizeState.EXT_VALUE_CLOSE_QUOTE);
+                    else if (!isQdText(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_VALUE:
+                    if (t.getType() == HttpTokens.Type.LF)
+                    {
+                        if (chunkSizeEnd())
+                            return true;
+                    }
+                    else if (isBWS(t))
+                        setChunkSizeState(ChunkSizeState.EXT_BWS);
+                    else if (t.getChar() == ';')
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_BEFORE);
+                    else if (!isTchar(t))
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                case EXT_VALUE_CLOSE_QUOTE:
+                    if (t.getType() == HttpTokens.Type.LF)
+                    {
+                        if (chunkSizeEnd())
+                            return true;
+                    }
+                    else if (isBWS(t))
+                        setChunkSizeState(ChunkSizeState.EXT_BWS);
+                    else if (t.getChar() == ';')
+                        setChunkSizeState(ChunkSizeState.EXT_NAME_BWS_BEFORE);
+                    else
+                        throw new IllegalCharacterException(_state, t, buffer);
+                    break;
+
+                default:
+                    throw new IllegalStateException(_chunkSizeState.toString());
+            }
+        }
+        return false;
+    }
+
+    private boolean chunkSizeEnd()
+    {
+        setChunkSizeState(ChunkSizeState.SIZE);
+        _chunkHeaderBytes = 0;
+        if (_chunkLength == 0)
+        {
+            setState(State.TRAILER);
+            return _handler.contentComplete();
+        }
+        setState(State.CHUNK);
+        return false;
+    }
+
+    /**
+     * Bad white space is defined in RFC 9110[5.6.3].
+     *
+     * @param t the token
+     * @return whether the token is a bad white space
+     */
+    private boolean isBWS(HttpTokens.Token t)
+    {
+        return t.getType() == HttpTokens.Type.SPACE || t.getType() == HttpTokens.Type.HTAB;
+    }
+
+    /**
+     * Token characters are defined in RFC 9110[5.6.2].
+     *
+     * @param t the token
+     * @return whether the token is a token character
+     */
+    private boolean isTchar(HttpTokens.Token t)
+    {
+        switch (t.getType())
+        {
+            case TCHAR:
+            case DIGIT:
+            case ALPHA:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Text inside quotes (qdtext) is defined in RFC 9110[5.6.4].
+     *
+     * @param t the token
+     * @return whether the token is quoted text
+     */
+    private boolean isQdText(HttpTokens.Token t)
+    {
+        switch (t.getType())
+        {
+            case HTAB:
+            case SPACE:
+            case OTEXT:
+                return true;
+            default:
+                char c = t.getChar();
+                return c == 0x21 || (c >= 0x23 && c <= 0x5B) || (c >= 0x5D && c <= 0x7E);
+        }
+    }
+
+    /**
+     * Escaped text inside quotes (quoted-pair) is defined in RFC 9110[5.6.4].
+     *
+     * @param t the token
+     * @return whether the token is a quoted pair
+     */
+    private boolean isQuotedPair(HttpTokens.Token t)
+    {
+        switch (t.getType())
+        {
+            case HTAB:
+            case SPACE:
+            case COLON:
+            case TCHAR:
+            case VCHAR:
+            case DIGIT:
+            case ALPHA:
+            case OTEXT:
+                return true;
+            default:
+                return false;
+        }
     }
 
     public boolean isAtEOF()
@@ -1904,6 +2117,16 @@ public class HttpParser
         _headerBytes = 0;
         _host = false;
         _headerComplete = false;
+        _chunkSizeState = ChunkSizeState.SIZE;
+        _chunkQuotedEscape = false;
+        _chunkHeaderBytes = 0;
+    }
+
+    private void setChunkSizeState(ChunkSizeState state)
+    {
+        if (debug)
+            LOG.debug("{}:{} --> {}", _state, _chunkSizeState, state);
+        _chunkSizeState = state;
     }
 
     protected void setState(State state)

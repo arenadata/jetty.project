@@ -1030,7 +1030,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1053,6 +1053,104 @@ public class HttpParserTest
     }
 
     @Test
+    public void testChunkSmuggledInQuotedExtensionValue()
+    {
+        // CVE-2026-2332: the CRLF is inside a quoted extension value, so it does
+        // not end the chunk header and the second request must not be parsed.
+        ByteBuffer buffer = BufferUtil.toBuffer(
+            "POST / HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "\r\n" +
+                "1;a=\"\r\n" +
+                "X\r\n" +
+                "0\r\n" +
+                "\r\n" +
+                "GET /smuggled HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Content-Length: 11\r\n" +
+                "\r\n" +
+                "\"\r\n" +
+                "Y\r\n" +
+                "0\r\n" +
+                "\r\n");
+        HttpParser.RequestHandler handler = new Handler();
+        HttpParser parser = new HttpParser(handler);
+        parseAll(parser, buffer);
+
+        assertTrue(_early);
+        assertTrue(parser.isState(HttpParser.State.CLOSE));
+        assertEquals("POST", _methodOrVersion);
+        assertEquals("/", _uriOrStatus);
+        assertNull(_content);
+    }
+
+    @Test
+    public void testChunkExtensions()
+    {
+        ByteBuffer buffer = BufferUtil.toBuffer(
+            "GET /chunk HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "\r\n" +
+                "a ; name \t = \t value ;quoted=\"a;b=\\\"c\\\", \t d\";bare\r\n" +
+                "0123456789\r\n" +
+                "0;last=\"end\"\r\n" +
+                "\r\n");
+        HttpParser.RequestHandler handler = new Handler();
+        HttpParser parser = new HttpParser(handler);
+        parseAll(parser, buffer);
+
+        assertNull(_bad);
+        assertEquals("0123456789", _content);
+        assertTrue(_messageCompleted);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1;\r\n", "1;=value\r\n", "1;name=\r\n", "1;name=\"unterminated\r\n", "1;name=\"a\"b\r\n"})
+    public void testBadChunkExtension(String chunkHeader)
+    {
+        ByteBuffer buffer = BufferUtil.toBuffer(
+            "GET /chunk HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "\r\n" +
+                chunkHeader +
+                "X\r\n" +
+                "0\r\n" +
+                "\r\n");
+        HttpParser.RequestHandler handler = new Handler();
+        HttpParser parser = new HttpParser(handler);
+        parseAll(parser, buffer);
+
+        assertTrue(_early);
+        assertTrue(parser.isState(HttpParser.State.CLOSE));
+    }
+
+    @Test
+    public void testChunkDataNotFollowedByCRLF()
+    {
+        // Without the CRLF after the chunk data, the '5' would be read as the
+        // size of a further chunk rather than rejected.
+        ByteBuffer buffer = BufferUtil.toBuffer(
+            "GET /chunk HTTP/1.1\r\n" +
+                "Host: localhost\r\n" +
+                "Transfer-Encoding: chunked\r\n" +
+                "\r\n" +
+                "1\r\n" +
+                "X5\r\n" +
+                "AAAAA\r\n" +
+                "0\r\n" +
+                "\r\n");
+        HttpParser.RequestHandler handler = new Handler();
+        HttpParser parser = new HttpParser(handler);
+        parseAll(parser, buffer);
+
+        assertTrue(_early);
+        assertTrue(parser.isState(HttpParser.State.CLOSE));
+    }
+
+    @Test
     public void testBadChunkParse()
     {
         ByteBuffer buffer = BufferUtil.toBuffer(
@@ -1060,7 +1158,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked, identity\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1084,7 +1182,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1118,7 +1216,7 @@ public class HttpParserTest
             "GET /chunk HTTP/1.0\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1157,7 +1255,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1189,7 +1287,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1253,7 +1351,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n");
         HttpParser.RequestHandler handler = new Handler();
         HttpParser parser = new HttpParser(handler);
@@ -1280,7 +1378,7 @@ public class HttpParserTest
                 "Header1: value1\r\n" +
                 "Transfer-Encoding: chunked\r\n" +
                 "\r\n" +
-                "a;\r\n" +
+                "a;ext\r\n" +
                 "0123456789\r\n" +
                 "1a\r\n" +
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
@@ -1346,7 +1444,7 @@ public class HttpParserTest
         ByteBuffer buffer1 = BufferUtil.toBuffer("Header1: value1\r\n" +
             "Transfer-Encoding: chunked\r\n" +
             "\r\n" +
-            "a;\r\n" +
+            "a;ext\r\n" +
             "0123456789\r\n" +
             "1a\r\n" +
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n" +
