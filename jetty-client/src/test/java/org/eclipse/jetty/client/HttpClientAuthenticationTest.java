@@ -179,6 +179,44 @@ public class HttpClientAuthenticationTest extends AbstractHttpClientServerTest
         testAuthentication(scenario, new DigestAuthentication(uri, ANY_REALM, "digest", "digest"));
     }
 
+    @ParameterizedTest
+    @ArgumentsSource(ScenarioProvider.class)
+    public void testDigestWithLatin1UserNameAndPassword(Scenario scenario) throws Exception
+    {
+        startDigest(scenario, new EmptyServerHandler());
+        URI uri = URI.create(scenario.getScheme() + "://localhost:" + connector.getLocalPort());
+        // Latin-1 credentials survive the header round-trip and must keep working.
+        testAuthentication(scenario, new DigestAuthentication(uri, realm, "digest_latin1_é", "café"));
+    }
+
+    @ParameterizedTest
+    @ArgumentsSource(ScenarioProvider.class)
+    public void testDigestWithNonLatin1Password(Scenario scenario) throws Exception
+    {
+        startDigest(scenario, new EmptyServerHandler());
+        URI uri = URI.create(scenario.getScheme() + "://localhost:" + connector.getLocalPort());
+        testAuthentication(scenario, new DigestAuthentication(uri, realm, "digest_utf8", "аб123"));
+    }
+
+    @ParameterizedTest
+    @ArgumentsSource(ScenarioProvider.class)
+    public void testDigestNonLatin1PasswordCollisionIsRejected(Scenario scenario) throws Exception
+    {
+        startDigest(scenario, new EmptyServerHandler());
+        URI uri = URI.create(scenario.getScheme() + "://localhost:" + connector.getLocalPort());
+        // Lossy ISO-8859-1 encoding used to map every character above U+00FF to '?',
+        // so this password hashed to the same value as the real one.
+        client.getAuthenticationStore().addAuthentication(new DigestAuthentication(uri, realm, "digest_utf8", "??123"));
+
+        ContentResponse response = client.newRequest("localhost", connector.getLocalPort())
+            .scheme(scenario.getScheme())
+            .path("/secure")
+            .timeout(5, TimeUnit.SECONDS)
+            .send();
+        assertNotNull(response);
+        assertEquals(401, response.getStatus());
+    }
+
     private void testAuthentication(Scenario scenario, Authentication authentication) throws Exception
     {
         AuthenticationStore authenticationStore = client.getAuthenticationStore();

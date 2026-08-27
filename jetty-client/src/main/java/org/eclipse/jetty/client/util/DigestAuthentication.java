@@ -19,6 +19,11 @@
 package org.eclipse.jetty.client.util;
 
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -120,10 +125,13 @@ public class DigestAuthentication extends AbstractAuthentication
                 clientQOP = "auth-int";
         }
 
+        // RFC 7616 charset parameter; only UTF-8 is defined.
+        Charset charset = "UTF-8".equalsIgnoreCase(params.get("charset")) ? StandardCharsets.UTF_8 : null;
+
         String realm = getRealm();
         if (ANY_REALM.equals(realm))
             realm = headerInfo.getRealm();
-        return new DigestResult(headerInfo.getHeader(), response.getContent(), realm, user, password, algorithm, nonce, clientQOP, opaque);
+        return new DigestResult(headerInfo.getHeader(), response.getContent(), realm, user, password, algorithm, nonce, clientQOP, opaque, charset);
     }
 
     private MessageDigest getMessageDigest(String algorithm)
@@ -150,8 +158,9 @@ public class DigestAuthentication extends AbstractAuthentication
         private final String nonce;
         private final String qop;
         private final String opaque;
+        private final Charset charset;
 
-        public DigestResult(HttpHeader header, byte[] content, String realm, String user, String password, String algorithm, String nonce, String qop, String opaque)
+        public DigestResult(HttpHeader header, byte[] content, String realm, String user, String password, String algorithm, String nonce, String qop, String opaque, Charset charset)
         {
             this.header = header;
             this.content = content;
@@ -162,6 +171,7 @@ public class DigestAuthentication extends AbstractAuthentication
             this.nonce = nonce;
             this.qop = qop;
             this.opaque = opaque;
+            this.charset = charset;
         }
 
         @Override
@@ -177,8 +187,14 @@ public class DigestAuthentication extends AbstractAuthentication
             if (digester == null)
                 return;
 
+            // Retain ISO-8859-1 for old servers that don't send the charset parameter.
+            Charset cs = charset == null ? StandardCharsets.ISO_8859_1 : charset;
+
+            if (!isUserNameSendable(user))
+                throw new IllegalArgumentException("Unsupported username: " + user);
+
             String a1 = user + ":" + realm + ":" + password;
-            String hashA1 = toHexString(digester.digest(a1.getBytes(StandardCharsets.ISO_8859_1)));
+            String hashA1 = toHexString(digester.digest(strictEncode(cs, a1)));
 
             String query = request.getQuery();
             String path = request.getPath();
@@ -186,7 +202,7 @@ public class DigestAuthentication extends AbstractAuthentication
             String a2 = request.getMethod() + ":" + uri;
             if ("auth-int".equals(qop))
                 a2 += ":" + toHexString(digester.digest(content));
-            String hashA2 = toHexString(digester.digest(a2.getBytes(StandardCharsets.ISO_8859_1)));
+            String hashA2 = toHexString(digester.digest(strictEncode(cs, a2)));
 
             String nonceCount;
             String clientNonce;
@@ -203,7 +219,7 @@ public class DigestAuthentication extends AbstractAuthentication
                 clientNonce = null;
                 a3 = hashA1 + ":" + nonce + ":" + hashA2;
             }
-            String hashA3 = toHexString(digester.digest(a3.getBytes(StandardCharsets.ISO_8859_1)));
+            String hashA3 = toHexString(digester.digest(strictEncode(cs, a3)));
 
             StringBuilder value = new StringBuilder("Digest");
             value.append(" username=\"").append(user).append("\"");
@@ -222,6 +238,51 @@ public class DigestAuthentication extends AbstractAuthentication
             value.append(", response=\"").append(hashA3).append("\"");
 
             request.header(header, value.toString());
+        }
+
+        /**
+         * Encodes reporting unmappable characters instead of replacing them,
+         * as the replacement makes distinct credentials hash to the same value.
+         *
+         * @param charset the charset to encode with
+         * @param value the value to encode
+         * @return the encoded bytes
+         */
+        private byte[] strictEncode(Charset charset, String value)
+        {
+            try
+            {
+                ByteBuffer byteBuffer = charset.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(value));
+                byte[] bytes = new byte[byteBuffer.remaining()];
+                byteBuffer.get(bytes);
+                return bytes;
+            }
+            catch (CharacterCodingException x)
+            {
+                throw new IllegalArgumentException("Could not encode credentials with " + charset.name(), x);
+            }
+        }
+
+        /**
+         * The username is sent verbatim inside a quoted-string, and header values
+         * are written as ISO-8859-1, so characters that do not survive that are
+         * rejected rather than silently mangled into a different username.
+         *
+         * @param user the username
+         * @return whether the username can be sent unchanged
+         */
+        private boolean isUserNameSendable(String user)
+        {
+            for (int i = 0; i < user.length(); ++i)
+            {
+                char c = user.charAt(i);
+                if (c < 0x20 || c == 0x7F || c > 0xFF || c == '"' || c == '\\')
+                    return false;
+            }
+            return true;
         }
 
         private String nextNonceCount()

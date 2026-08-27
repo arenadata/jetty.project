@@ -163,7 +163,7 @@ public class DigestAuthModule extends BaseAuthModule
             response.setHeader(HttpHeader.WWW_AUTHENTICATE.asString(), "Digest realm=\"" + realmName +
                 "\", domain=\"" + domain +
                 "\", nonce=\"" + newNonce(timestamp) +
-                "\", algorithm=MD5, qop=\"auth\"" + (useStale ? (" stale=" + stale) : ""));
+                "\", algorithm=MD5, qop=\"auth\", charset=UTF-8" + (useStale ? (" stale=" + stale) : ""));
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED);
             return AuthStatus.SEND_CONTINUE;
         }
@@ -311,18 +311,18 @@ public class DigestAuthModule extends BaseAuthModule
                 else
                 {
                     // calc A1 digest
-                    md.update(username.getBytes(StandardCharsets.ISO_8859_1));
+                    md.update(username.getBytes(StandardCharsets.UTF_8));
                     md.update((byte)':');
-                    md.update(realm.getBytes(StandardCharsets.ISO_8859_1));
+                    md.update(realm.getBytes(StandardCharsets.UTF_8));
                     md.update((byte)':');
-                    md.update(password.getBytes(StandardCharsets.ISO_8859_1));
+                    md.update(password.getBytes(StandardCharsets.UTF_8));
                     ha1 = md.digest();
                 }
                 // calc A2 digest
                 md.reset();
-                md.update(method.getBytes(StandardCharsets.ISO_8859_1));
+                md.update(method.getBytes(StandardCharsets.UTF_8));
                 md.update((byte)':');
-                md.update(uri.getBytes(StandardCharsets.ISO_8859_1));
+                md.update(uri.getBytes(StandardCharsets.UTF_8));
                 byte[] ha2 = md.digest();
 
                 // calc digest
@@ -332,17 +332,17 @@ public class DigestAuthModule extends BaseAuthModule
                 // request-digest = <"> < KD ( H(A1), unq(nonce-value) ":" H(A2)
                 // ) > <">
 
-                md.update(TypeUtil.toString(ha1, 16).getBytes(StandardCharsets.ISO_8859_1));
+                md.update(TypeUtil.toString(ha1, 16).getBytes(StandardCharsets.UTF_8));
                 md.update((byte)':');
-                md.update(nonce.getBytes(StandardCharsets.ISO_8859_1));
+                md.update(nonce.getBytes(StandardCharsets.UTF_8));
                 md.update((byte)':');
-                md.update(nc.getBytes(StandardCharsets.ISO_8859_1));
+                md.update(nc.getBytes(StandardCharsets.UTF_8));
                 md.update((byte)':');
-                md.update(cnonce.getBytes(StandardCharsets.ISO_8859_1));
+                md.update(cnonce.getBytes(StandardCharsets.UTF_8));
                 md.update((byte)':');
-                md.update(qop.getBytes(StandardCharsets.ISO_8859_1));
+                md.update(qop.getBytes(StandardCharsets.UTF_8));
                 md.update((byte)':');
-                md.update(TypeUtil.toString(ha2, 16).getBytes(StandardCharsets.ISO_8859_1));
+                md.update(TypeUtil.toString(ha2, 16).getBytes(StandardCharsets.UTF_8));
                 byte[] digest = md.digest();
 
                 // check digest
